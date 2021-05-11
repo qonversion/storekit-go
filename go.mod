@@ -1,4 +1,4 @@
-module github.com/Gurpartap/storekit-go
+module github.com/qonversion/storekit-go
 
 go 1.14
 

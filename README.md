@@ -1,4 +1,5 @@
 # storekit-go
+Fork of https://github.com/Gurpartap/storekit-go
 
 [![GoDoc](https://godoc.org/github.com/Gurpartap/storekit-go?status.svg)](https://godoc.org/github.com/Gurpartap/storekit-go)
 
@@ -21,7 +22,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/Gurpartap/storekit-go"
+	"github.com/qonversion/storekit-go"
 )
 
 func main() {
@@ -32,7 +33,7 @@ func main() {
 	userId := "12345"
 
 	// Input coming from either user device or subscription notifications webhook
-	receiptData := []byte("...")
+	receiptData := "..."
 
 	err := verifyAndSave(appStoreSharedSecret, userId, receiptData)
 	if err != nil {
@@ -40,7 +41,7 @@ func main() {
 	}
 }
 
-func verifyAndSave(appStoreSharedSecret, userId string, receiptData []byte) error {
+func verifyAndSave(appStoreSharedSecret, userId string, receiptData string) error {
 	// Use .OnProductionEnv() when deploying
 	//
 	// storekit-go automatically retries sandbox server upon incompatible
