@@ -53,15 +53,58 @@ func (c *client) WithoutEnvAutoFix() *client {
 	return c
 }
 
-func (c *client) Verify(ctx context.Context, req *ReceiptRequest) ([]byte, *ReceiptResponse, error) {
-post:
-	body, err := c.post(ctx, req)
+func (c *client) isSandbox() bool {
+	return c.verificationURL == sandboxReceiptVerificationURL
+}
+
+func (c *client) isProduction() bool {
+	return c.verificationURL == productionReceiptVerificationURL
+}
+
+func (c *client) Verify(ctx context.Context, receiptRequest *ReceiptRequest) (body []byte, resp *ReceiptResponse, err error) {
+	// Prepare request:
+	reqJSON, err := json.Marshal(receiptRequest)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errors.Wrap(err, "could not marshal receipt request")
+	}
+	buf := bytes.NewReader(reqJSON)
+
+	// Dial the App Store server:
+	body, resp, err = c.queryStore(ctx, buf, c.verificationURL)
+	if err != nil {
+		return
 	}
 
+	// Resend to the secondary url if the primary one is wrong:
+	if c.autofixEnvironment {
+		resendNeeded, newUrl := c.checkResendNeeded(resp)
+
+		if resendNeeded {
+			body, resp, err = c.queryStore(ctx, buf, newUrl)
+		}
+	}
+
+	return
+}
+
+// Send prepared request to Appstore and parse the response:
+func (c *client) queryStore(ctx context.Context, requestBuf *bytes.Reader, url string) (body []byte, resp *ReceiptResponse, err error) {
+	body, err = c.post(ctx, requestBuf, url)
+	if err != nil {
+		return
+	}
+
+	resp, err = parseResponse(body)
+	if err != nil {
+		return
+	}
+
+	return
+}
+
+func parseResponse(body []byte) (*ReceiptResponse, error) {
 	resp := &ReceiptResponse{}
-	err = json.Unmarshal(
+	err := json.Unmarshal(
 		bytes.Map(func(r rune) rune {
 			if unicode.IsControl(r) {
 				return -1
@@ -71,60 +114,18 @@ post:
 		resp,
 	)
 	if err != nil {
-		return nil, nil, errors.Wrap(err, "could not unmarshal app store response")
+		return nil, errors.Wrap(err, "could not unmarshal app store response")
 	}
 
-	if c.autofixEnvironment {
-		// Auto fix but only once.
-		c.autofixEnvironment = false
-
-		switch resp.Status {
-		case ReceiptResponseStatusSandboxReceiptSentToProduction:
-			// On a 21007 status, retry the request in the sandbox environment (only if the
-			// current environment is production – to avoid unexpected loop).
-			//
-			// These are receipts from Apple review team.
-			if c.isProduction() {
-				c.verificationURL = sandboxReceiptVerificationURL
-				goto post
-			}
-		case ReceiptResponseStatusProductionReceiptSentToSandbox:
-			// On a 21008 status, retry the request in the production environment (only if
-			// the current environment is sandbox – to avoid unexpected loop).
-			if c.isSandbox() {
-				c.verificationURL = productionReceiptVerificationURL
-				goto post
-			}
-		default:
-			// TODO: Retry at least once when an App Store internal error occurs here:
-			// 	if resp.Status >= 21100 && resp.Status <= 21199 {
-			// 		if resp.IsRetryable {
-			// 			goto post
-			// 		}
-			// 	}
-			break
-		}
-	}
-
-	return body, resp, nil
+	return resp, nil
 }
 
-func (c *client) post(ctx context.Context, receiptRequest *ReceiptRequest) ([]byte, error) {
-	// Prepare request:
-
-	reqJSON, err := json.Marshal(receiptRequest)
-	if err != nil {
-		return nil, errors.Wrap(err, "could not marshal receipt request")
-	}
-
-	// Dial the App Store server:
-
-	buf := bytes.NewReader(reqJSON)
-
-	req, err := http.NewRequest("POST", c.verificationURL, buf)
+func (c *client) post(ctx context.Context, requestBuf *bytes.Reader, url string) ([]byte, error) {
+	req, err := http.NewRequest("POST", url, requestBuf)
 	if err != nil {
 		return nil, err
 	}
+
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(ctx)
 	r, err := http.DefaultClient.Do(req)
@@ -138,7 +139,6 @@ func (c *client) post(ctx context.Context, receiptRequest *ReceiptRequest) ([]by
 	}
 
 	// Parse response:
-
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		return nil, errors.Wrap(err, "could not read app store response")
@@ -147,10 +147,31 @@ func (c *client) post(ctx context.Context, receiptRequest *ReceiptRequest) ([]by
 	return body, nil
 }
 
-func (c *client) isSandbox() bool {
-	return c.verificationURL == sandboxReceiptVerificationURL
-}
+func (c *client) checkResendNeeded(resp *ReceiptResponse) (resendNeeded bool, newUrl string) {
+	resendNeeded = false
 
-func (c *client) isProduction() bool {
-	return c.verificationURL == productionReceiptVerificationURL
+	switch resp.Status {
+	case ReceiptResponseStatusSandboxReceiptSentToProduction:
+		// On a 21007 status, retry the request in the sandbox environment:
+		if c.isProduction() {
+			resendNeeded = true
+			newUrl = sandboxReceiptVerificationURL
+		}
+	case ReceiptResponseStatusProductionReceiptSentToSandbox:
+		// On a 21008 status, retry the request in the production environment:
+		if c.isSandbox() {
+			resendNeeded = true
+			newUrl = productionReceiptVerificationURL
+		}
+	default:
+		// TODO: Retry at least once when an App Store internal error occurs here:
+		// 	if resp.Status >= 21100 && resp.Status <= 21199 {
+		// 		if resp.IsRetryable {
+		// 			goto post
+		// 		}
+		// 	}
+		break
+	}
+
+	return
 }
