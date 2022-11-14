@@ -80,6 +80,7 @@ func (c *client) Verify(ctx context.Context, receiptRequest *ReceiptRequest) (bo
 		resendNeeded, newUrl := c.checkResendNeeded(resp)
 
 		if resendNeeded {
+			buf = bytes.NewReader(reqJSON)
 			body, resp, err = c.queryStore(ctx, buf, newUrl)
 		}
 	}
